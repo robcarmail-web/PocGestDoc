@@ -131,56 +131,44 @@ def genera_documento():
 
         # Modalita 1: Direct DOCX upload
         if has_docx_1 or has_docx_2a or has_docx_2b:
-            docx_converter = DocxToODT()
-
             if has_docx_1:
                 temp_file = _save_uploaded_file(request.files['docx_istruttoria'])
-                fragments, styles = docx_converter.convert_file(temp_file)
-                rich_content['I_testo_obj'] = (fragments, styles)
-                os.remove(temp_file)
+                rich_content['I_testo_obj'] = temp_file
 
             if has_docx_2a:
                 temp_file = _save_uploaded_file(request.files['docx_proposta'])
-                fragments, styles = docx_converter.convert_file(temp_file)
-                rich_content['P_testo_obj'] = (fragments, styles)
-                os.remove(temp_file)
+                rich_content['P_testo_obj'] = temp_file
 
             if has_docx_2b:
                 temp_file = _save_uploaded_file(request.files['docx_delibera'])
-                fragments, styles = docx_converter.convert_file(temp_file)
-                rich_content['P_testo_obj_2'] = (fragments, styles)
-                os.remove(temp_file)
+                rich_content['P_testo_obj_2'] = temp_file
 
         # Modalita 2/3: TipTap JSON
+        # Per questo POC, manteniamo il fallback legacy a ODTInjector per l'editor web
+        # (Idealmente l'editor TipTap dovrebbe inviare DOCX o HTML e il server lo converte a DOCX)
         elif has_tiptap_1 or has_tiptap_2a or has_tiptap_2b:
-            tiptap_converter = TiptapToODT()
+            return jsonify({'error': 'TipTap a DOCX non ancora supportato in questa iterazione. Usa DOCX Upload.'}), 400
 
-            if has_tiptap_1:
-                fragments, styles = tiptap_converter.convert(data['tiptap_istruttoria'])
-                rich_content['I_testo_obj'] = (fragments, styles)
+        # Generate DOCX
+        from docx_injector import DocxInjector
+        injector = DocxInjector('template/ASL_Template_Delibera.docx')
+        docx_bytes = injector.inject_placeholders(simple_data, rich_content if rich_content else None)
 
-            if has_tiptap_2a:
-                fragments, styles = tiptap_converter.convert(data['tiptap_proposta'])
-                rich_content['P_testo_obj'] = (fragments, styles)
-
-            if has_tiptap_2b:
-                fragments, styles = tiptap_converter.convert(data['tiptap_delibera'])
-                rich_content['P_testo_obj_2'] = (fragments, styles)
-
-        # Generate ODT
-        injector = ODTInjector('template/ASL_Template_Delibera.odt')
-        odt_bytes = injector.inject_placeholders(simple_data, rich_content if rich_content else None)
+        # Cleanup temp files
+        for var_path in rich_content.values():
+            if os.path.exists(var_path):
+                os.remove(var_path)
 
         # Save and return
-        output_file = 'output/delibera_output.odt'
+        output_file = 'output/delibera_output.docx'
         with open(output_file, 'wb') as f:
-            f.write(odt_bytes)
+            f.write(docx_bytes)
 
         return send_file(
-            BytesIO(odt_bytes),
-            mimetype='application/vnd.oasis.opendocument.text',
+            BytesIO(docx_bytes),
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             as_attachment=True,
-            download_name='delibera.odt'
+            download_name='delibera.docx'
         )
 
     except Exception as e:
@@ -189,38 +177,55 @@ def genera_documento():
 
 @app.route('/api/genera-pdf', methods=['POST'])
 def genera_pdf():
-    """Generate PDF from generated ODT (optional)."""
+    """Generate PDF from generated DOCX using docx2pdf (Native Word)."""
     try:
-        # First generate ODT
-        response = genera_documento()
-
-        # Try to convert to PDF using soffice if available
-        import subprocess
-
-        temp_odt = 'output/temp_delibera.odt'
-        temp_pdf = 'output/temp_delibera.pdf'
-
-        # Save ODT
+        # First generate the DOCX document normally
+        # We reuse the logic without returning the flask response yet
         data = request.form.to_dict()
         simple_data = {k: v for k, v in data.items() if k in DEFAULT_VALUES}
-        injector = ODTInjector('template/ASL_Template_Delibera.odt')
-        odt_bytes = injector.inject_placeholders(simple_data)
+        rich_content = {}
+        
+        has_docx_1 = 'docx_istruttoria' in request.files and request.files['docx_istruttoria']
+        has_docx_2a = 'docx_proposta' in request.files and request.files['docx_proposta']
+        has_docx_2b = 'docx_delibera' in request.files and request.files['docx_delibera']
 
-        with open(temp_odt, 'wb') as f:
-            f.write(odt_bytes)
+        if has_docx_1:
+            rich_content['I_testo_obj'] = _save_uploaded_file(request.files['docx_istruttoria'])
+        if has_docx_2a:
+            rich_content['P_testo_obj'] = _save_uploaded_file(request.files['docx_proposta'])
+        if has_docx_2b:
+            rich_content['P_testo_obj_2'] = _save_uploaded_file(request.files['docx_delibera'])
 
-        # Convert to PDF
-        result = subprocess.run(
-            ['soffice', '--headless', '--convert-to', 'pdf', '--outdir', 'output', temp_odt],
-            capture_output=True,
-            timeout=30
-        )
+        from docx_injector import DocxInjector
+        injector = DocxInjector('template/ASL_Template_Delibera.docx')
+        docx_bytes = injector.inject_placeholders(simple_data, rich_content if rich_content else None)
+
+        # Cleanup temp upload files
+        for var_path in rich_content.values():
+            if os.path.exists(var_path):
+                os.remove(var_path)
+
+        # Save intermediate DOCX
+        temp_docx = 'output/temp_delibera_for_pdf.docx'
+        temp_pdf = 'output/temp_delibera_for_pdf.pdf'
+        with open(temp_docx, 'wb') as f:
+            f.write(docx_bytes)
+
+        # Convert to PDF using docx2pdf
+        from docx2pdf import convert
+        import pythoncom
+        # Initialize COM for the current thread (required for Flask/threaded apps)
+        pythoncom.CoInitialize()
+        try:
+            convert(temp_docx, temp_pdf)
+        finally:
+             pythoncom.CoUninitialize()
 
         if os.path.exists(temp_pdf):
             with open(temp_pdf, 'rb') as f:
                 pdf_bytes = f.read()
 
-            os.remove(temp_odt)
+            os.remove(temp_docx)
             os.remove(temp_pdf)
 
             return send_file(
@@ -230,10 +235,8 @@ def genera_pdf():
                 download_name='delibera.pdf'
             )
         else:
-            return jsonify({'error': 'PDF conversion failed'}), 500
+            return jsonify({'error': 'PDF conversion failed (docx2pdf)'}), 500
 
-    except FileNotFoundError:
-        return jsonify({'error': 'LibreOffice (soffice) not found. PDF generation unavailable.'}), 501
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

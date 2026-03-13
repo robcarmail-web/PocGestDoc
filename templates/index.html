@@ -397,6 +397,19 @@
             </div>
 
             <div id="status" class="status"></div>
+            
+            <div id="editInWordSection" style="display: none; margin-top: 20px; padding: 20px; border: 1px dashed #0066cc; border-radius: 8px; background: #f0f7ff; text-align: center;">
+                <h3 style="color: #0066cc; margin-bottom: 10px;">Documento Pronto!</h3>
+                <p style="margin-bottom: 15px; font-size: 14px;">Puoi scaricare il file o modificarlo direttamente in Microsoft Word:</p>
+                <div style="display: flex; gap: 15px; justify-content: center;">
+                    <a id="downloadLink" href="#" class="btn-primary" style="text-decoration: none; display: inline-block; padding: 10px 20px; border-radius: 4px;">Scarica DOCX</a>
+                    <a id="webdavLink" href="ms-word:ofe|u|http://localhost:8080/delibera_output.docx" class="btn-secondary" style="text-decoration: none; display: inline-block; padding: 10px 20px; border-radius: 4px; background: #2b579a; color: white;">
+                        <img src="https://www.microsoft.com/favicon.ico" style="width: 16px; vertical-align: middle; margin-right: 8px;">
+                        Modifica in Word
+                    </a>
+                </div>
+                <p style="margin-top: 10px; font-size: 12px; color: #666;">Nota: Le modifiche salvate in Word verranno caricate automaticamente sul server.</p>
+            </div>
         </form>
     </div>
 
@@ -472,12 +485,13 @@
                 }
                 return response.blob().then(blob => {
                     const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'delibera.odt';
-                    a.click();
-                    window.URL.revokeObjectURL(url);
-                    showStatus('Documento generato e scaricato!', 'success');
+                    
+                    // Mostra la sezione di modifica
+                    document.getElementById('editInWordSection').style.display = 'block';
+                    document.getElementById('downloadLink').href = url;
+                    document.getElementById('downloadLink').download = 'delibera_output.docx';
+                    
+                    showStatus('Documento generato con successo!', 'success');
                 });
             })
             .catch(error => {

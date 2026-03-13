@@ -9,7 +9,7 @@ from io import BytesIO
 from pathlib import Path
 from copy import deepcopy
 from lxml import etree
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
 
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 XML_SPACE = 'http://www.w3.org/XML/1998/namespace'
@@ -20,67 +20,73 @@ def _w(tag):
 
 
 class DocxInjector:
-    """Sostituisce P_testo_obj in un template DOCX con contenuto formattato."""
+    """Sostituisce placeholder semplici e ricchi in un template DOCX."""
 
     def __init__(self, template_path: str):
         self.template_path = Path(template_path)
 
     # ------------------------------------------------------------------ #
-    # Metodo principale: sorgente DOCX (upload)
+    # Metodi di iniezione multipla
     # ------------------------------------------------------------------ #
 
-    def inject_from_docx(self, source_docx_path: str, placeholder: str = 'P_testo_obj') -> bytes:
+    def inject_placeholders(self,
+                            simple_data: Dict[str, str],
+                            rich_content: Optional[Dict[str, str]] = None) -> bytes:
         """
-        Copia tutto il contenuto dal DOCX sorgente nel template,
-        sostituendo il placeholder. Preserva liste, tabelle, formattazione.
+        Sostituisce nel template:
+        1. simple_data: dizionario { 'oggetto': 'Valore Oggetto', ... } -> sostituisce il testo inline
+        2. rich_content: dizionario { 'I_testo_obj': '/path/to/fragment.docx', ... } -> inietta intero body
         """
-        # Leggi entrambi i file come ZIP
+        rich_content = rich_content or {}
+
+        # Leggi il template ZIP
         template_files = self._read_zip(self.template_path)
-        source_files = self._read_zip(source_docx_path)
-
-        # Parsa i document.xml
         tpl_doc = etree.fromstring(template_files['word/document.xml'])
-        src_doc = etree.fromstring(source_files['word/document.xml'])
-
-        # Trova il body e il placeholder nel template
         tpl_body = tpl_doc.find('.//{%s}body' % W)
-        placeholder_elem = self._find_placeholder(tpl_body, placeholder)
 
-        if placeholder_elem is None:
-            print(f'[WARNING] Placeholder "{placeholder}" not found')
-            output = BytesIO()
-            output.write(self._rebuild_zip(template_files))
-            return output.getvalue()
+        # 1. Simple Replacements
+        self._replace_simple_placeholders(tpl_body, simple_data)
 
-        # Estrai tutti gli elementi dal body del sorgente (escluso sectPr finale)
-        src_body = src_doc.find('.//{%s}body' % W)
-        src_elements = [deepcopy(child) for child in src_body
-                        if child.tag != _w('sectPr')]
+        # 2. Rich Replacements (DOCX upload)
+        for placeholder_key, source_docx_path in rich_content.items():
+            try:
+                source_files = self._read_zip(source_docx_path)
+                src_doc = etree.fromstring(source_files['word/document.xml'])
 
-        # Inserisci nel template nella posizione del placeholder
-        for elem in reversed(src_elements):
-            placeholder_elem.addnext(elem)
+                placeholder_elem = self._find_placeholder(tpl_body, placeholder_key)
+                if placeholder_elem is None:
+                    print(f'[WARNING] Rich placeholder "{placeholder_key}" non trovato nel template.')
+                    continue
 
-        # Rimuovi il placeholder
-        tpl_body.remove(placeholder_elem)
+                # Estrai dal fragment
+                src_body = src_doc.find('.//{%s}body' % W)
+                src_elements = [deepcopy(child) for child in src_body
+                                if child.tag != _w('sectPr')]
 
-        # Copia numbering.xml se presente nel sorgente
-        if 'word/numbering.xml' in source_files:
-            template_files['word/numbering.xml'] = source_files['word/numbering.xml']
-            # Aggiorna il manifest
-            template_files = self._update_manifest(template_files, 'word/numbering.xml',
-                                                    'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml')
-            # Aggiorna le relazioni
-            template_files = self._update_rels(template_files, 'word/numbering.xml')
+                # Inserisci nel posizionamento salvato
+                for elem in reversed(src_elements):
+                    placeholder_elem.addnext(elem)
 
-        # Copia stili del sorgente (merge base)
-        if 'word/styles.xml' in source_files:
-            template_files['word/styles.xml'] = self._merge_styles(
-                template_files.get('word/styles.xml'),
-                source_files['word/styles.xml']
-            )
+                # Rimuovi l'elemento placeholder dal DOM (prendendo il parent esatto)
+                placeholder_elem.getparent().remove(placeholder_elem)
 
-        # Aggiorna il document.xml nel template
+                # Unisci gli asset collegati dal sorgente nel template (Numerazioni e Stili)
+                if 'word/numbering.xml' in source_files:
+                    template_files['word/numbering.xml'] = source_files['word/numbering.xml']
+                    template_files = self._update_manifest(template_files, 'word/numbering.xml',
+                                                           'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml')
+                    template_files = self._update_rels(template_files, 'word/numbering.xml')
+
+                if 'word/styles.xml' in source_files:
+                    template_files['word/styles.xml'] = self._merge_styles(
+                        template_files.get('word/styles.xml'),
+                        source_files['word/styles.xml']
+                    )
+
+            except Exception as e:
+                print(f"[ERROR] Iniezione fallita per {placeholder_key}: {str(e)}")
+
+        # Salva back nel template virtuale
         template_files['word/document.xml'] = etree.tostring(
             tpl_doc, xml_declaration=True, encoding='UTF-8', standalone=True
         )
@@ -88,75 +94,64 @@ class DocxInjector:
         return self._rebuild_zip(template_files)
 
     # ------------------------------------------------------------------ #
-    # Metodo alternativo: lista di paragrafi (editor web)
+    # Gestione nodi
     # ------------------------------------------------------------------ #
 
-    def inject_from_paragraphs(self, paragraph_list: List[dict], placeholder: str = 'P_testo_obj') -> bytes:
-        """
-        Costruisce elementi XML da paragraph_list e li inietta nel template.
-        Usato per l'editor web (TipTap).
-        """
-        # Crea un DOCX temporaneo con i paragrafi usando python-docx
-        # (usa il default template che include stili lista)
-        temp_bytes = self._build_temp_docx(paragraph_list)
+    def _replace_simple_placeholders(self, body_element, simple_data: dict):
+        """Sostituisce i placeholder nel testo scalar mantenendo la formattazione esistente."""
+        if not simple_data:
+            return
 
-        # Poi inietta il contenuto di quel DOCX nel template
-        import tempfile, os
-        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as tmp:
-            tmp.write(temp_bytes)
-            temp_path = tmp.name
-        try:
-            return self.inject_from_docx(temp_path, placeholder)
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+        for paragraph in body_element.iter(_w('p')):
+            for key, val in simple_data.items():
+                target_str = f'$${key}$$'
+                # Metodo semplice: concatena il testo logico
+                p_text = ''.join(t.text or '' for t in paragraph.iter(_w('t')))
+                if target_str in p_text:
+                    # Abbiamo trovato il target nel paragrafo.
+                    # Per evitare split complessi di XML runs, sostituiamo brutale
+                    # raccogliendo il testo. Un approccio più robusto farebbe chunking nel run.
+                    self._replace_text_in_paragraph(paragraph, target_str, str(val))
 
-    def _build_temp_docx(self, paragraph_list: List[dict]) -> bytes:
-        """Costruisce un DOCX temporaneo con i paragrafi usando python-docx."""
-        from docx import Document
-        doc = Document()
+    def _replace_text_in_paragraph(self, paragraph, search_str: str, replace_str: str):
+        """Versione basica e sicura per ricerca/sostituzione nei text run Ooxml."""
+        # Se un paragrafo contiene una run con frammentazione, lo puliamo e uniamo tutto in un solo run,
+        # per semplicità di sostituzione in questo POC.
+        all_text = ""
+        runs = list(paragraph.findall('.//{%s}r' % W))
+        if not runs:
+            return
 
-        for para_info in paragraph_list:
-            if para_info['type'] == 'paragraph':
-                para = doc.add_paragraph()
-                try:
-                    para.style = para_info.get('style', 'Normal')
-                except Exception:
-                    para.style = 'Normal'
+        first_run_props = None
+        for r in runs:
+            r_pr = r.find('{%s}rPr' % W)
+            if r_pr is not None and first_run_props is None:
+                first_run_props = deepcopy(r_pr)
 
-                for run_info in para_info.get('runs', []):
-                    run = para.add_run(run_info['text'])
-                    if run_info.get('bold'):
-                        run.bold = True
-                    if run_info.get('italic'):
-                        run.italic = True
-                    if run_info.get('underline'):
-                        run.underline = True
+            for t in r.findall('{%s}t' % W):
+                all_text += t.text or ""
+            # Pulisce i vecchi attributi
+            paragraph.remove(r)
 
-            elif para_info['type'] == 'list':
-                list_type = para_info['list_type']
-                for item in para_info.get('items', []):
-                    para = doc.add_paragraph()
-                    try:
-                        para.style = 'List Bullet' if list_type == 'bullet' else 'List Number'
-                    except Exception:
-                        para.style = 'Normal'
+        new_text = all_text.replace(search_str, replace_str)
 
-                    for run_info in item.get('runs', []):
-                        run = para.add_run(run_info['text'])
-                        if run_info.get('bold'):
-                            run.bold = True
-                        if run_info.get('italic'):
-                            run.italic = True
-                        if run_info.get('underline'):
-                            run.underline = True
+        new_run = etree.SubElement(paragraph, _w('r'))
+        if first_run_props is not None:
+            new_run.append(first_run_props)
+        new_t = etree.SubElement(new_run, _w('t'))
+        new_t.set('{%s}space' % XML_SPACE, 'preserve')
+        new_t.text = new_text
 
-        buf = BytesIO()
-        doc.save(buf)
-        return buf.getvalue()
+    def _find_placeholder(self, body, placeholder: str):
+        """Cerca il paragrafo che contiene esattamente il placeholder desiderato."""
+        for p in body.iter(_w('p')):
+            text = ''.join(t.text or '' for t in p.iter(_w('t')))
+            if placeholder in text:
+                return p
+        return None
 
     # ------------------------------------------------------------------ #
-    # Utility
+    # Utility Zip e XML
     # ------------------------------------------------------------------ #
 
     def _read_zip(self, path) -> dict:
@@ -169,21 +164,12 @@ class DocxInjector:
     def _rebuild_zip(self, files: dict) -> bytes:
         output = BytesIO()
         with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as zf:
-            # mimetype deve essere primo e non compresso
             if '[Content_Types].xml' in files:
                 zf.writestr('[Content_Types].xml', files['[Content_Types].xml'])
             for name, data in files.items():
                 if name != '[Content_Types].xml':
                     zf.writestr(name, data)
         return output.getvalue()
-
-    def _find_placeholder(self, body, placeholder: str):
-        """Cerca il paragrafo che contiene il placeholder."""
-        for p in body.iter(_w('p')):
-            text = ''.join(t.text or '' for t in p.iter(_w('t')))
-            if placeholder in text:
-                return p
-        return None
 
     def _merge_styles(self, tpl_styles_bytes: Optional[bytes], src_styles_bytes: bytes) -> bytes:
         """Aggiunge stili del sorgente che non esistono nel template."""
@@ -195,14 +181,12 @@ class DocxInjector:
 
         S = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
-        # Raccogli styleId già presenti nel template
         existing_ids = set()
         for style in tpl_root.findall('.//{%s}style' % S):
             sid = style.get('{%s}styleId' % S)
             if sid:
                 existing_ids.add(sid)
 
-        # Aggiungi stili mancanti dal sorgente
         for style in src_root.findall('.//{%s}style' % S):
             sid = style.get('{%s}styleId' % S)
             if sid and sid not in existing_ids:
@@ -218,7 +202,6 @@ class DocxInjector:
         root = etree.fromstring(files['[Content_Types].xml'])
         CT = 'http://schemas.openxmlformats.org/package/2006/content-types'
 
-        # Controlla se esiste già
         part_uri = '/' + part_name
         for override in root.findall('{%s}Override' % CT):
             if override.get('PartName') == part_uri:
@@ -240,13 +223,11 @@ class DocxInjector:
         root = etree.fromstring(files[rels_path])
         R = 'http://schemas.openxmlformats.org/package/2006/relationships'
 
-        # Controlla se relazione esiste già
         target = part_name.replace('word/', '')
         for rel in root.findall('{%s}Relationship' % R):
             if rel.get('Target') == target:
                 return files
 
-        # Trova un ID disponibile
         existing_ids = {rel.get('Id') for rel in root.findall('{%s}Relationship' % R)}
         rid = 'rId' + str(len(existing_ids) + 20)
 
@@ -258,26 +239,3 @@ class DocxInjector:
         files[rels_path] = etree.tostring(root, xml_declaration=True, encoding='UTF-8', standalone=True)
         return files
 
-    # ------------------------------------------------------------------ #
-    # API pubblica: inject_content (routing automatico)
-    # ------------------------------------------------------------------ #
-
-    def inject_content(self, source, placeholder: str = 'P_testo_obj') -> bytes:
-        """
-        Router:
-        - Se source è una stringa (path file), usa inject_from_docx
-        - Se source è una lista di dict, usa inject_from_paragraphs
-        """
-        if isinstance(source, str):
-            return self.inject_from_docx(source, placeholder)
-        elif isinstance(source, list):
-            return self.inject_from_paragraphs(source, placeholder)
-        else:
-            raise ValueError(f"Tipo sorgente non supportato: {type(source)}")
-
-    def save(self, output_path: str, source, placeholder: str = 'P_testo_obj') -> None:
-        """Salva il documento generato su disco."""
-        docx_bytes = self.inject_content(source, placeholder)
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'wb') as f:
-            f.write(docx_bytes)
