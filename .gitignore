@@ -24,3 +24,4 @@ output/
 .DS_Store
 *.tmp
 skills-reference/
+.claude/
