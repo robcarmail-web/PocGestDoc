@@ -31,15 +31,32 @@ Le seguenti librerie devono essere installate tramite `pip`:
   - `5000`: Utilizzata dall'applicazione Flask (Backend/UI).
   - `8080`: Utilizzata dal server WebDAV (Open/Save Word).
 
-## 5. Installazione Rapida
-Per installare tutti i moduli necessari in un colpo solo, eseguire:
+## 5. Installazione Rapida e Ambiente Virtuale
+Per garantire che Visual Studio Code rilevi correttamente Python e per isolare le dipendenze, è fortemente raccomandato l'uso di un ambiente virtuale.
 
-```bash
+### Procedura Standard (Windows):
+```powershell
+# 1. Crea l'ambiente virtuale
+python -m venv .venv
+
+# 2. Attiva l'ambiente
+.venv\Scripts\activate
+
+# 3. Installa le dipendenze
 pip install flask python-docx lxml wsgidav cheroot docx2pdf pywin32
+```
+
+### Alternativa veloce (con `uv`):
+Se hai installato `uv`, puoi usare:
+```bash
+uv venv
+uv pip install flask python-docx lxml wsgidav cheroot docx2pdf pywin32
 ```
 
 ## 6. Struttura dei File Critici nel POC
 - `app.py`: Logica principale e API Flask.
 - `webdav_server.py`: Server dedicato alla modifica in tempo reale.
 - `modules/docx_injector.py`: Motore XML per l'unione dei file DOCX.
-- `output/`: Cartella condivisa via WebDAV dove vengono memorizzati i documenti generati e modificati.
+- `output/`: Cartella condivisa via WebDAV (documenti generati).
+- `.venv/`: Ambiente virtuale Python (da non committare su Git).
+- `TECHNICAL_SPECS.md`: Questa documentazione.
