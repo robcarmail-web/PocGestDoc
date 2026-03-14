@@ -1,24 +1,17 @@
 """
-Flask application for ODT Template Injection POC.
-Supports three modes: direct DOCX upload, DOCX + editor, editor-only.
+Flask application for DOCX Template Injection POC.
+Includes only the Atto implementation.
 """
 import sys
-import json
 import os
-from pathlib import Path
 from io import BytesIO
 import tempfile
 import shutil
 
 sys.path.insert(0, 'modules')
 
-from flask import Flask, render_template, request, send_file, jsonify
+from flask import Flask, render_template, request, send_file, jsonify, redirect, url_for
 from werkzeug.utils import secure_filename
-
-from odt_injector import ODTInjector
-from docx_to_odt import DocxToODT
-from html_to_tiptap import HTMLToTiptap
-from tiptap_to_odt import TiptapToODT
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -49,18 +42,10 @@ DEFAULT_VALUES = {
     'DirettoreNome': 'Dott. Mario Rossi',
 }
 
-
 @app.route('/')
 def index():
-    """Serve main page."""
-    return render_template('index.html', defaults=DEFAULT_VALUES)
-
-
-@app.route('/editor')
-def editor():
-    """Serve advanced TipTap editor."""
-    return render_template('editor.html')
-
+    """Redirect to Atto page."""
+    return redirect(url_for('atto'))
 
 @app.route('/atto')
 def atto():
@@ -70,7 +55,6 @@ def atto():
     if os.path.exists(src) and not os.path.exists(dst):
         shutil.copy2(src, dst)
     return render_template('atto.html', defaults=DEFAULT_VALUES)
-
 
 @app.route('/api/upload-testo-atto', methods=['POST'])
 def upload_testo_atto():
@@ -89,116 +73,36 @@ def upload_testo_atto():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-
-@app.route('/api/docx-to-tiptap', methods=['POST'])
-def docx_to_tiptap():
-    """Modalita 2: Convert uploaded DOCX to TipTap JSON."""
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
-
-    file = request.files['file']
-    if not file.filename.endswith('.docx'):
-        return jsonify({'error': 'File must be .docx'}), 400
-
-    try:
-        # Save temp file
-        temp_file = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(file.filename))
-        file.save(temp_file)
-
-        # Convert DOCX to ODT fragments
-        converter = DocxToODT()
-        fragments, styles = converter.convert_file(temp_file)
-
-        # Convert first fragment to TipTap (simplistic approach)
-        # In a real app, this would be more sophisticated
-        tiptap_data = {
-            "type": "doc",
-            "content": [
-                {
-                    "type": "paragraph",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"Content from {len(fragments)} paragraphs in DOCX"
-                        }
-                    ]
-                }
-            ]
-        }
-
-        os.remove(temp_file)
-        return jsonify({'tiptap': tiptap_data})
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
 @app.route('/api/genera', methods=['POST'])
 def genera_documento():
     """
-    Generate ODT document.
-    Accepts: simple placeholders + one of:
-      - docx files (Modalita 1)
-      - tiptap JSON (Modalita 2/3)
+    Generate DOCX document for Atto.
     """
     try:
         data = request.form.to_dict()
 
         # Extract simple placeholders
         simple_data = {}
-        rich_content = {}
-
         for key in DEFAULT_VALUES.keys():
             if key in data:
                 simple_data[key] = data[key]
 
-        # Handle rich content - three modes
-        has_tiptap_1 = 'tiptap_istruttoria' in data and data['tiptap_istruttoria']
-        has_tiptap_2a = 'tiptap_proposta' in data and data['tiptap_proposta']
-        has_tiptap_2b = 'tiptap_delibera' in data and data['tiptap_delibera']
-        has_tiptap_atto = 'tiptap_atto' in data and data['tiptap_atto']
+        rich_content = {}
+        template_file = 'template/ASL_Template_Atto.docx'
 
-        has_docx_1 = 'docx_istruttoria' in request.files and request.files['docx_istruttoria']
-        has_docx_2a = 'docx_proposta' in request.files and request.files['docx_proposta']
-        has_docx_2b = 'docx_delibera' in request.files and request.files['docx_delibera']
-
-        # Gestione del template delibera o atto
-        tipo_template = data.get('tipo_template', 'delibera')
-        template_file = 'template/ASL_Template_Atto.docx' if tipo_template == 'atto' else 'template/ASL_Template_Delibera.docx'
-
-        if tipo_template == 'atto':
-            # Usa sempre e solo output/TestoAtto.docx
-            if os.path.exists(os.path.join('output', 'TestoAtto.docx')):
-                # Creiamo un file temporaneo copiato da TestoAtto.docx
-                # per farlo cancellare dalla logica standard senza rompere il file originale WebDAV
-                temp_file = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_testo_atto_gen.docx')
-                shutil.copy2(os.path.join('output', 'TestoAtto.docx'), temp_file)
-                rich_content['P_testo_obj'] = temp_file
-            else:
-                return jsonify({'error': 'Il file output/TestoAtto.docx non esiste sul server. Ricarica la pagina iniziale.'}), 400
-        else: # This is the 'else' for 'if tipo_template == 'atto':'
-            # Vecchia Modalità Delibera (1)
-            if has_docx_1 or has_docx_2a or has_docx_2b:
-                if has_docx_1:
-                    temp_file = _save_uploaded_file(request.files['docx_istruttoria'])
-                    rich_content['I_testo_obj'] = temp_file
-
-                if has_docx_2a:
-                    temp_file = _save_uploaded_file(request.files['docx_proposta'])
-                    rich_content['P_testo_obj'] = temp_file
-
-                if has_docx_2b:
-                    temp_file = _save_uploaded_file(request.files['docx_delibera'])
-                    rich_content['P_testo_obj_2'] = temp_file
-
-        # Modalita 2/3: TipTap JSON
-        if not tipo_template == 'atto' and (has_tiptap_1 or has_tiptap_2a or has_tiptap_2b):
-            return jsonify({'error': 'TipTap a DOCX non ancora supportato in questa iterazione. Usa DOCX Upload.'}), 400
+        if os.path.exists(os.path.join('output', 'TestoAtto.docx')):
+            # Creiamo un file temporaneo copiato da TestoAtto.docx
+            # per farlo cancellare dalla logica standard senza rompere il file originale WebDAV
+            temp_file = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_testo_atto_gen.docx')
+            shutil.copy2(os.path.join('output', 'TestoAtto.docx'), temp_file)
+            rich_content['P_testo_obj'] = temp_file
+        else:
+            return jsonify({'error': 'Il file output/TestoAtto.docx non esiste sul server. Ricarica la pagina iniziale.'}), 400
 
         # Generate DOCX
         from docx_injector import DocxInjector
         injector = DocxInjector(template_file)
-        docx_bytes = injector.inject_placeholders(simple_data, rich_content if rich_content else None)
+        docx_bytes = injector.inject_placeholders(simple_data, rich_content)
 
         # Cleanup temp files
         for var_path in rich_content.values():
@@ -206,7 +110,7 @@ def genera_documento():
                 os.remove(var_path)
 
         # Save and return
-        output_file = 'output/delibera_output.docx'
+        output_file = 'output/atto_output.docx'
         with open(output_file, 'wb') as f:
             f.write(docx_bytes)
 
@@ -214,7 +118,7 @@ def genera_documento():
             BytesIO(docx_bytes),
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             as_attachment=True,
-            download_name='delibera.docx'
+            download_name='atto.docx'
         )
 
     except Exception as e:
@@ -223,50 +127,33 @@ def genera_documento():
 
 @app.route('/api/genera-pdf', methods=['POST'])
 def genera_pdf():
-    """Generate PDF from generated DOCX using docx2pdf (Native Word)."""
+    """Generate PDF from generated DOCX for Atto using docx2pdf (Native Word)."""
     try:
-        # First generate the DOCX document normally
-        # We reuse the logic without returning the flask response yet
         data = request.form.to_dict()
         simple_data = {k: v for k, v in data.items() if k in DEFAULT_VALUES}
         rich_content = {}
         
-        has_docx_1 = 'docx_istruttoria' in request.files and request.files['docx_istruttoria']
-        has_docx_2a = 'docx_proposta' in request.files and request.files['docx_proposta']
-        has_docx_2b = 'docx_delibera' in request.files and request.files['docx_delibera']
+        template_file = 'template/ASL_Template_Atto.docx'
 
-        # Gestione del template delibera o atto
-        tipo_template = data.get('tipo_template', 'delibera')
-        template_file = 'template/ASL_Template_Atto.docx' if tipo_template == 'atto' else 'template/ASL_Template_Delibera.docx'
-
-        if tipo_template == 'atto':
-            # Usa sempre e solo output/TestoAtto.docx
-            if os.path.exists(os.path.join('output', 'TestoAtto.docx')):
-                temp_file = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_testo_atto_gen_pdf.docx')
-                shutil.copy2(os.path.join('output', 'TestoAtto.docx'), temp_file)
-                rich_content['P_testo_obj'] = temp_file
-            else:
-                return jsonify({'error': 'Il file output/TestoAtto.docx non esiste sul server.'}), 400
+        if os.path.exists(os.path.join('output', 'TestoAtto.docx')):
+            temp_file = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_testo_atto_gen_pdf.docx')
+            shutil.copy2(os.path.join('output', 'TestoAtto.docx'), temp_file)
+            rich_content['P_testo_obj'] = temp_file
         else:
-            if has_docx_1:
-                rich_content['I_testo_obj'] = _save_uploaded_file(request.files['docx_istruttoria'])
-            if has_docx_2a:
-                rich_content['P_testo_obj'] = _save_uploaded_file(request.files['docx_proposta'])
-            if has_docx_2b:
-                rich_content['P_testo_obj_2'] = _save_uploaded_file(request.files['docx_delibera'])
+            return jsonify({'error': 'Il file output/TestoAtto.docx non esiste sul server.'}), 400
 
         from docx_injector import DocxInjector
         injector = DocxInjector(template_file)
-        docx_bytes = injector.inject_placeholders(simple_data, rich_content if rich_content else None)
+        docx_bytes = injector.inject_placeholders(simple_data, rich_content)
 
-        # Cleanup temp upload files
+        # Cleanup temp files
         for var_path in rich_content.values():
             if os.path.exists(var_path):
                 os.remove(var_path)
 
         # Save intermediate DOCX
-        temp_docx = 'output/temp_delibera_for_pdf.docx'
-        temp_pdf = 'output/temp_delibera_for_pdf.pdf'
+        temp_docx = 'output/temp_atto_for_pdf.docx'
+        temp_pdf = 'output/temp_atto_for_pdf.pdf'
         with open(temp_docx, 'wb') as f:
             f.write(docx_bytes)
 
@@ -291,20 +178,13 @@ def genera_pdf():
                 BytesIO(pdf_bytes),
                 mimetype='application/pdf',
                 as_attachment=True,
-                download_name='delibera.pdf'
+                download_name='atto.pdf'
             )
         else:
             return jsonify({'error': 'PDF conversion failed (docx2pdf)'}), 500
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-
-def _save_uploaded_file(file_obj):
-    """Save uploaded file and return path."""
-    temp_file = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(file_obj.filename))
-    file_obj.save(temp_file)
-    return temp_file
 
 
 if __name__ == '__main__':
