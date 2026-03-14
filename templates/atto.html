@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>POC Atto - Interfaccia Atto</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 800px;
+            width: 100%;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .mode-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 15px;
+        }
+        .mode-btn {
+            padding: 10px 20px;
+            background: #f0f0f0;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+            border-bottom: 3px solid transparent;
+        }
+        .mode-btn.active {
+            background: #43e97b;
+            color: #333;
+            border-bottom-color: #38f9d7;
+        }
+
+        .mode-content { display: none; }
+        .mode-content.active { display: block; }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        input[type="text"],
+        input[type="file"],
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.3s;
+        }
+        input[type="text"]:focus,
+        input[type="file"]:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #43e97b;
+        }
+        textarea {
+            resize: vertical;
+            min-height: 250px;
+            line-height: 1.6;
+        }
+
+        .editor-content {
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            padding: 15px;
+            min-height: 250px;
+            overflow-y: auto;
+            background: white;
+            font-size: 14px;
+            line-height: 1.6;
+            transition: border-color 0.3s;
+        }
+        .editor-content:focus {
+            outline: none;
+            border-color: #43e97b;
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 10px;
+            padding: 10px;
+            background: #f9f9f9;
+            border-radius: 4px;
+        }
+        .toolbar button {
+            padding: 8px 12px;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+        .toolbar button:hover {
+            background: #43e97b;
+            color: #333;
+            border-color: #43e97b;
+        }
+
+        .buttons-row {
+            display: flex;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .btn-generate {
+            flex: 1;
+            padding: 14px;
+            background: #43e97b;
+            color: #333;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .btn-generate.secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+        .btn-generate:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(67, 233, 123, 0.3);
+        }
+        .btn-generate.secondary:hover {
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+        }
+        .btn-generate:active {
+            transform: translateY(0);
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 6px;
+            display: none;
+            font-weight: 600;
+        }
+        .status.success {
+            background: #d4edda;
+            border: 2px solid #c3e6cb;
+            color: #155724;
+            display: block;
+        }
+        .status.error {
+            background: #f8d7da;
+            border: 2px solid #f5c6cb;
+            color: #721c24;
+            display: block;
+        }
+        .status.loading {
+            background: #d1ecf1;
+            border: 2px solid #bee5eb;
+            color: #0c5460;
+            display: block;
+        }
+
+        .hint {
+            font-size: 12px;
+            color: #999;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>POC Atto</h1>
+        <p class="subtitle">Genera un Atto DOCX compilando i campi e modificando TestoAtto.docx</p>
+
+        <form id="attoForm">
+            <!-- Campi Base -->
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Numero Proposta</label>
+                    <input type="text" name="numeroproposta" value="{{ defaults.numeroproposta }}">
+                </div>
+                <div class="form-group">
+                    <label>Data Proposta</label>
+                    <input type="text" name="dataproposta" value="{{ defaults.dataproposta }}">
+                </div>
+                <div class="form-group" style="grid-column: span 2;">
+                    <label>Oggetto</label>
+                    <input type="text" name="oggetto" value="{{ defaults.oggetto }}">
+                </div>
+                <div class="form-group">
+                    <label>Estensore</label>
+                    <input type="text" name="EstensoreNome" value="{{ defaults.EstensoreNome }}">
+                </div>
+                <div class="form-group">
+                    <label>Responsabile Procedimento</label>
+                    <input type="text" name="ResponsabileNome" value="{{ defaults.ResponsabileNome }}">
+                </div>
+                <div class="form-group">
+                    <label>Direttore</label>
+                    <input type="text" name="DirettoreNome" value="{{ defaults.DirettoreNome }}">
+                </div>
+            </div>
+            
+            <input type="hidden" name="tipo_template" value="atto">
+        </form>
+
+        <div style="margin-top: 30px; padding: 25px; border: 2px solid #ddd; border-radius: 8px; background: #fafafa;">
+            <h3 style="color: #333; margin-bottom: 15px; border-bottom: 2px solid #43e97b; padding-bottom: 5px; display: inline-block;">Testo dell'Atto</h3>
+            <p style="margin-bottom: 20px; font-size: 14px; color: #666;">
+                Il contenuto base è salvato sul server in <code>TestoAtto.docx</code>.
+                Puoi modificarlo direttamente via Word, oppure caricare un nuovo file per sovrascriverlo.
+            </p>
+            
+            <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 20px;">
+                <a id="webdavLink" href="ms-word:ofe|u|http://localhost:8080/TestoAtto.docx" class="btn-generate" style="text-decoration: none; display: inline-block; text-align: center; flex: unset; padding: 12px 24px; background: #2b579a; color: white; border-radius: 6px;">
+                    <img src="https://www.microsoft.com/favicon.ico" style="width: 16px; vertical-align: middle; margin-right: 8px; filter: brightness(0) invert(1);">
+                    Modifica in Word
+                </a>
+                
+                <span style="color: #999; font-weight: bold;">OPPURE</span>
+                
+                <label style="cursor: pointer; background: #f0f0f0; padding: 12px 24px; border-radius: 6px; font-weight: 600; font-size: 14px; border: 1px solid #ddd; margin-bottom: 0;">
+                    Carica nuovo DOCX
+                    <input type="file" id="upload_testo_atto" accept=".docx" style="display: none;" onchange="uploadTestoAtto(event)">
+                </label>
+            </div>
+            <div id="upload_status" style="font-size: 13px; font-weight: bold; min-height: 20px;"></div>
+        </div>
+
+        <div class="buttons-row" style="margin-top: 30px;">
+            <button type="button" class="btn-generate" onclick="submitForm('docx')" style="font-size: 18px; padding: 16px;">Genera DOCX Finale</button>
+            <button type="button" class="btn-generate secondary" onclick="submitForm('pdf')" style="font-size: 18px; padding: 16px;">Genera PDF Finale</button>
+        </div>
+
+        <div id="editInWordSection" style="display: none; margin-top: 20px; padding: 20px; border: 2px dashed #43e97b; border-radius: 8px; background: #f0fdf4; text-align: center;">
+            <h3 style="color: #333; margin-bottom: 10px;">Documento Pronto!</h3>
+            <p style="margin-bottom: 15px; font-size: 14px; color: #666;">Puoi scaricare il file o modificarlo direttamente in Microsoft Word:</p>
+            <div style="display: flex; gap: 15px; justify-content: center;">
+                <a id="downloadLink" href="#" class="btn-generate secondary" style="text-decoration: none; display: inline-block; text-align: center; flex: unset; padding: 10px 20px;">Scarica File</a>
+                <a id="webdavLink" href="ms-word:ofe|u|http://localhost:8080/delibera_output.docx" class="btn-generate" style="text-decoration: none; display: inline-block; text-align: center; flex: unset; padding: 10px 20px; background: #2b579a; color: white;">
+                    <img src="https://www.microsoft.com/favicon.ico" style="width: 16px; vertical-align: middle; margin-right: 8px; filter: brightness(0) invert(1);">
+                    Modifica in Word
+                </a>
+            </div>
+            <p style="margin-top: 10px; font-size: 12px; color: #666;">Nota: Le modifiche salvate in Word verranno caricate automaticamente sul server.</p>
+        </div>
+
+        <!-- Status -->
+        <div id="status" class="status"></div>
+    </div>
+
+    <script>
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = 'status ' + type;
+        }
+
+        function uploadTestoAtto(event) {
+            const fileInput = event.target;
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            const statusEl = document.getElementById('upload_status');
+            statusEl.textContent = 'Caricamento in corso...';
+            statusEl.style.color = '#0066cc';
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            fetch('/api/upload-testo-atto', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json().then(data => ({ok: response.ok, data})))
+            .then(({ok, data}) => {
+                if (!ok) {
+                    throw new Error(data.error || 'Errore di caricamento');
+                }
+                statusEl.textContent = '✅ ' + data.message;
+                statusEl.style.color = '#155724';
+                // Pulisce l'input per permettere un nuovo caricamento dello stesso file
+                fileInput.value = '';
+                
+                // Opzionalmente nascondere il messaggio dopo qualche secondo
+                setTimeout(() => statusEl.textContent = '', 5000);
+            })
+            .catch(error => {
+                statusEl.textContent = '❌ ' + error.message;
+                statusEl.style.color = '#721c24';
+            });
+        }
+
+        function submitForm(format) {
+            showStatus('Generazione in corso...', 'loading');
+            
+            const form = document.getElementById('attoForm');
+            const formData = new FormData(form);
+
+            const isPdf = format === 'pdf';
+            const url = isPdf ? '/api/genera-pdf' : '/api/genera';
+            const dlName = isPdf ? 'atto.pdf' : 'atto.docx';
+
+            fetch(url, {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(err => { throw new Error(err.error || 'Errore di generazione'); });
+                }
+                return response.blob().then(blob => {
+                    const objUrl = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = objUrl;
+                    a.download = dlName;
+                    a.click();
+                    window.URL.revokeObjectURL(objUrl);
+                    
+                    showStatus('✅ Documento finale generato e scaricato!', 'success');
+                });
+            })
+            .catch(error => {
+                showStatus('❌ Errore: ' + error.message, 'error');
+            });
+        }
+    </script>
+</body>
+</html>

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from io import BytesIO
 import tempfile
+import shutil
 
 sys.path.insert(0, 'modules')
 
@@ -43,6 +44,9 @@ DEFAULT_VALUES = {
     'DirAmmData': '15/01/2024',
     'DirGenNome': 'Prof. Roberto Blu',
     'SostitutoDelDirettoreGenerale': '',
+    # Nuovi default per Atto
+    'ResponsabileNome': 'Dott.ssa Laura Rosa',
+    'DirettoreNome': 'Dott. Mario Rossi',
 }
 
 
@@ -56,6 +60,34 @@ def index():
 def editor():
     """Serve advanced TipTap editor."""
     return render_template('editor.html')
+
+
+@app.route('/atto')
+def atto():
+    """Serve Atto page e assicura TestoAtto.docx in output."""
+    src = os.path.join('templates', 'TestoAtto.docx')
+    dst = os.path.join('output', 'TestoAtto.docx')
+    if os.path.exists(src) and not os.path.exists(dst):
+        shutil.copy2(src, dst)
+    return render_template('atto.html', defaults=DEFAULT_VALUES)
+
+
+@app.route('/api/upload-testo-atto', methods=['POST'])
+def upload_testo_atto():
+    """Sovrascrive output/TestoAtto.docx con il file caricato."""
+    if 'file' not in request.files:
+        return jsonify({'error': 'Nessun file selezionato'}), 400
+    
+    file = request.files['file']
+    if not file.filename.endswith('.docx'):
+        return jsonify({'error': 'Il file deve essere .docx'}), 400
+        
+    try:
+        dst = os.path.join('output', 'TestoAtto.docx')
+        file.save(dst)
+        return jsonify({'success': True, 'message': 'File caricato e sovrascritto con successo!'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/docx-to-tiptap', methods=['POST'])
@@ -124,34 +156,48 @@ def genera_documento():
         has_tiptap_1 = 'tiptap_istruttoria' in data and data['tiptap_istruttoria']
         has_tiptap_2a = 'tiptap_proposta' in data and data['tiptap_proposta']
         has_tiptap_2b = 'tiptap_delibera' in data and data['tiptap_delibera']
+        has_tiptap_atto = 'tiptap_atto' in data and data['tiptap_atto']
 
         has_docx_1 = 'docx_istruttoria' in request.files and request.files['docx_istruttoria']
         has_docx_2a = 'docx_proposta' in request.files and request.files['docx_proposta']
         has_docx_2b = 'docx_delibera' in request.files and request.files['docx_delibera']
 
-        # Modalita 1: Direct DOCX upload
-        if has_docx_1 or has_docx_2a or has_docx_2b:
-            if has_docx_1:
-                temp_file = _save_uploaded_file(request.files['docx_istruttoria'])
-                rich_content['I_testo_obj'] = temp_file
+        # Gestione del template delibera o atto
+        tipo_template = data.get('tipo_template', 'delibera')
+        template_file = 'template/ASL_Template_Atto.docx' if tipo_template == 'atto' else 'template/ASL_Template_Delibera.docx'
 
-            if has_docx_2a:
-                temp_file = _save_uploaded_file(request.files['docx_proposta'])
+        if tipo_template == 'atto':
+            # Usa sempre e solo output/TestoAtto.docx
+            if os.path.exists(os.path.join('output', 'TestoAtto.docx')):
+                # Creiamo un file temporaneo copiato da TestoAtto.docx
+                # per farlo cancellare dalla logica standard senza rompere il file originale WebDAV
+                temp_file = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_testo_atto_gen.docx')
+                shutil.copy2(os.path.join('output', 'TestoAtto.docx'), temp_file)
                 rich_content['P_testo_obj'] = temp_file
+            else:
+                return jsonify({'error': 'Il file output/TestoAtto.docx non esiste sul server. Ricarica la pagina iniziale.'}), 400
+        else: # This is the 'else' for 'if tipo_template == 'atto':'
+            # Vecchia Modalità Delibera (1)
+            if has_docx_1 or has_docx_2a or has_docx_2b:
+                if has_docx_1:
+                    temp_file = _save_uploaded_file(request.files['docx_istruttoria'])
+                    rich_content['I_testo_obj'] = temp_file
 
-            if has_docx_2b:
-                temp_file = _save_uploaded_file(request.files['docx_delibera'])
-                rich_content['P_testo_obj_2'] = temp_file
+                if has_docx_2a:
+                    temp_file = _save_uploaded_file(request.files['docx_proposta'])
+                    rich_content['P_testo_obj'] = temp_file
+
+                if has_docx_2b:
+                    temp_file = _save_uploaded_file(request.files['docx_delibera'])
+                    rich_content['P_testo_obj_2'] = temp_file
 
         # Modalita 2/3: TipTap JSON
-        # Per questo POC, manteniamo il fallback legacy a ODTInjector per l'editor web
-        # (Idealmente l'editor TipTap dovrebbe inviare DOCX o HTML e il server lo converte a DOCX)
-        elif has_tiptap_1 or has_tiptap_2a or has_tiptap_2b:
+        if not tipo_template == 'atto' and (has_tiptap_1 or has_tiptap_2a or has_tiptap_2b):
             return jsonify({'error': 'TipTap a DOCX non ancora supportato in questa iterazione. Usa DOCX Upload.'}), 400
 
         # Generate DOCX
         from docx_injector import DocxInjector
-        injector = DocxInjector('template/ASL_Template_Delibera.docx')
+        injector = DocxInjector(template_file)
         docx_bytes = injector.inject_placeholders(simple_data, rich_content if rich_content else None)
 
         # Cleanup temp files
@@ -189,15 +235,28 @@ def genera_pdf():
         has_docx_2a = 'docx_proposta' in request.files and request.files['docx_proposta']
         has_docx_2b = 'docx_delibera' in request.files and request.files['docx_delibera']
 
-        if has_docx_1:
-            rich_content['I_testo_obj'] = _save_uploaded_file(request.files['docx_istruttoria'])
-        if has_docx_2a:
-            rich_content['P_testo_obj'] = _save_uploaded_file(request.files['docx_proposta'])
-        if has_docx_2b:
-            rich_content['P_testo_obj_2'] = _save_uploaded_file(request.files['docx_delibera'])
+        # Gestione del template delibera o atto
+        tipo_template = data.get('tipo_template', 'delibera')
+        template_file = 'template/ASL_Template_Atto.docx' if tipo_template == 'atto' else 'template/ASL_Template_Delibera.docx'
+
+        if tipo_template == 'atto':
+            # Usa sempre e solo output/TestoAtto.docx
+            if os.path.exists(os.path.join('output', 'TestoAtto.docx')):
+                temp_file = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_testo_atto_gen_pdf.docx')
+                shutil.copy2(os.path.join('output', 'TestoAtto.docx'), temp_file)
+                rich_content['P_testo_obj'] = temp_file
+            else:
+                return jsonify({'error': 'Il file output/TestoAtto.docx non esiste sul server.'}), 400
+        else:
+            if has_docx_1:
+                rich_content['I_testo_obj'] = _save_uploaded_file(request.files['docx_istruttoria'])
+            if has_docx_2a:
+                rich_content['P_testo_obj'] = _save_uploaded_file(request.files['docx_proposta'])
+            if has_docx_2b:
+                rich_content['P_testo_obj_2'] = _save_uploaded_file(request.files['docx_delibera'])
 
         from docx_injector import DocxInjector
-        injector = DocxInjector('template/ASL_Template_Delibera.docx')
+        injector = DocxInjector(template_file)
         docx_bytes = injector.inject_placeholders(simple_data, rich_content if rich_content else None)
 
         # Cleanup temp upload files
