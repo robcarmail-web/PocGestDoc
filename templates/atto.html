@@ -392,6 +392,14 @@
                 // Pulisce l'input per permettere un nuovo caricamento dello stesso file
                 fileInput.value = '';
                 
+                // Aggiorna i link WebDAV con un nuovo timestamp (cache-buster per Word)
+                const ts = new Date().getTime();
+                const links = document.querySelectorAll('a[href^="ms-word:"]');
+                links.forEach(link => {
+                    const baseHref = link.href.split('?')[0];
+                    link.href = baseHref + '?v=' + ts;
+                });
+                
                 // Opzionalmente nascondere il messaggio dopo qualche secondo
                 setTimeout(() => statusEl.textContent = '', 5000);
             })
@@ -400,6 +408,16 @@
                 statusEl.style.color = '#721c24';
             });
         }
+
+        // Add a timestamp when the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            const ts = new Date().getTime();
+            const links = document.querySelectorAll('a[href^="ms-word:"]');
+            links.forEach(link => {
+                const baseHref = link.href.split('?')[0];
+                link.href = baseHref + '?v=' + ts;
+            });
+        });
 
         function submitForm(format) {
             showStatus('Generazione in corso...', 'loading');
