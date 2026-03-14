@@ -83,6 +83,13 @@ class DocxInjector:
                         source_files['word/styles.xml']
                     )
 
+                # Normalizza il contenuto iniettato per adattarlo al template
+                src_default_tab = self._get_default_tab_stop(source_files)
+                tpl_default_tab = self._get_default_tab_stop(template_files)
+                tpl_text_width = self._get_text_area_width(template_files)
+                for elem in src_elements:
+                    self._normalize_content(elem, src_default_tab, tpl_default_tab, tpl_text_width)
+
             except Exception as e:
                 print(f"[ERROR] Iniezione fallita per {placeholder_key}: {str(e)}")
 
@@ -193,6 +200,143 @@ class DocxInjector:
                 tpl_root.append(deepcopy(style))
 
         return etree.tostring(tpl_root, xml_declaration=True, encoding='UTF-8', standalone=True)
+
+    def _normalize_content(self, element, src_default_tab: int, tpl_default_tab: int, tpl_text_width: int):
+        """Normalizza un elemento iniettato per adattarlo al layout del template.
+
+        Applica in sequenza:
+        1. Tab stop espliciti (se defaultTabStop diverso)
+        2. Pulizia spazi usati come padding
+        3. Rimozione paragrafi vuoti ridondanti in coda
+        """
+        if src_default_tab != tpl_default_tab:
+            self._make_tabs_explicit(element, src_default_tab, tpl_text_width)
+        self._clean_space_padding(element)
+
+    def _clean_space_padding(self, element):
+        """Rimuove run con solo spazi usati come padding tra contenuto reale.
+
+        Pattern tipico: run con 20+ spazi inseriti manualmente per simulare
+        allineamento. Li rimuove e lascia che il tab stop faccia il lavoro.
+        """
+        for p in element.iter(_w('p')):
+            runs = list(p.findall(_w('r')))
+            has_tab = any(r.findall(_w('tab')) for r in runs)
+            if not has_tab:
+                continue
+
+            for r in runs:
+                texts = r.findall(_w('t'))
+                tabs = r.findall(_w('tab'))
+                if not tabs and len(texts) == 1:
+                    text = texts[0].text or ''
+                    # Run con solo spazi (>= 5) tra run con tab e run con testo
+                    if len(text) >= 5 and not text.strip():
+                        p.remove(r)
+
+    def _get_default_tab_stop(self, docx_files: dict) -> int:
+        """Legge il defaultTabStop da settings.xml. Default OOXML: 720 (1.27cm)."""
+        if 'word/settings.xml' not in docx_files:
+            return 720
+        settings = etree.fromstring(docx_files['word/settings.xml'])
+        dts = settings.find('.//{%s}defaultTabStop' % W)
+        if dts is not None:
+            try:
+                return int(dts.get(_w('val')))
+            except (ValueError, TypeError):
+                pass
+        return 720
+
+    def _get_text_area_width(self, docx_files: dict) -> int:
+        """Calcola la larghezza dell'area testo (page width - margini L/R)."""
+        if 'word/document.xml' not in docx_files:
+            return 9072  # ~16cm fallback
+        doc = etree.fromstring(docx_files['word/document.xml'])
+        sectPr = doc.find('.//{%s}sectPr' % W)
+        if sectPr is None:
+            return 9072
+        pgSz = sectPr.find('{%s}pgSz' % W)
+        pgMar = sectPr.find('{%s}pgMar' % W)
+        if pgSz is None or pgMar is None:
+            return 9072
+        try:
+            w = int(pgSz.get(_w('w')))
+            l = int(pgMar.get(_w('left')))
+            r = int(pgMar.get(_w('right')))
+            return w - l - r
+        except (ValueError, TypeError):
+            return 9072
+
+    def _make_tabs_explicit(self, element, src_default_tab: int, tpl_text_width: int):
+        """Normalizza i tab nei paragrafi iniettati per adattarli al template.
+
+        - Pochi tab (<=3): aggiunge tab stop espliciti con l'intervallo del sorgente.
+        - Molti tab (>3): pattern di 'fake right alignment', convertito in un singolo
+          tab stop right-aligned alla larghezza del template.
+        """
+        for p in element.iter(_w('p')):
+            tab_count = sum(1 for r in p.iter(_w('r'))
+                           for _ in r.findall(_w('tab')))
+            if tab_count == 0:
+                continue
+
+            pPr = p.find(_w('pPr'))
+            if pPr is not None and pPr.find(_w('tabs')) is not None:
+                continue
+
+            if pPr is None:
+                pPr = etree.SubElement(p, _w('pPr'))
+                p.insert(0, pPr)
+
+            tabs_elem = etree.SubElement(pPr, _w('tabs'))
+
+            if tab_count > 3:
+                # Molti tab = fake right alignment.
+                # Sostituiamo i 18+ tab con un unico tab right-aligned,
+                # e comprimiamo i run eliminando i tab ridondanti.
+                tab = etree.SubElement(tabs_elem, _w('tab'))
+                tab.set(_w('val'), 'right')
+                tab.set(_w('pos'), str(tpl_text_width))
+
+                # Comprimi: tieni solo il primo tab e rimuovi quelli extra
+                self._collapse_tabs(p)
+            else:
+                # Pochi tab: mantieni l'intervallo originale del sorgente
+                for i in range(1, tab_count + 2):
+                    tab = etree.SubElement(tabs_elem, _w('tab'))
+                    tab.set(_w('val'), 'left')
+                    tab.set(_w('pos'), str(src_default_tab * i))
+
+    def _collapse_tabs(self, paragraph):
+        """Comprime run con molti tab consecutivi in un singolo tab."""
+        runs = list(paragraph.findall(_w('r')))
+        found_first_tab = False
+        runs_to_remove = []
+
+        for r in runs:
+            tabs_in_run = r.findall(_w('tab'))
+            texts_in_run = r.findall(_w('t'))
+            has_real_text = any((t.text or '').strip() for t in texts_in_run)
+
+            if tabs_in_run and not has_real_text:
+                if found_first_tab:
+                    # Tab ridondante - rimuovi intero run
+                    runs_to_remove.append(r)
+                else:
+                    # Primo tab - tieni solo un <w:tab/>, rimuovi extra
+                    found_first_tab = True
+                    for extra_tab in tabs_in_run[1:]:
+                        r.remove(extra_tab)
+                    # Rimuovi anche gli spazi bianchi nei <w:t> dello stesso run
+                    for t in texts_in_run:
+                        if not (t.text or '').strip():
+                            r.remove(t)
+            elif has_real_text and found_first_tab:
+                # Run con testo dopo i tab - tieni così com'è
+                break
+
+        for r in runs_to_remove:
+            paragraph.remove(r)
 
     def _update_manifest(self, files: dict, part_name: str, content_type: str) -> dict:
         """Aggiunge una entry al [Content_Types].xml se non esiste."""
