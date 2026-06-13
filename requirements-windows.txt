@@ -1,0 +1,4 @@
+-r requirements-linux.txt
+# PDF su Windows (Word/COM)
+docx2pdf>=0.1.8
+pywin32>=306

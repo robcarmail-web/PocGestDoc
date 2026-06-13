@@ -1,5 +1,8 @@
 flask>=3.0
 python-docx>=1.1
-mammoth>=1.8
 lxml>=5.0
-requests>=2.31
+# WebDAV (modifica documenti in Word)
+wsgidav>=4.0
+cheroot>=10.0
+# PDF su Linux: usa LibreOffice headless (PDF_BACKEND=libreoffice, default su Linux)
+# Su Windows usare requirements-windows.txt oppure PDF_BACKEND=word
